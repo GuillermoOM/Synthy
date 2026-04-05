@@ -1,0 +1,29 @@
+[package]
+name = "synthy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Audio I/O
+cpal = "0.15"
+
+# Audio DSP Synthesis
+fundsp = "0.18"
+
+# Lock-free Communication
+crossbeam-channel = "0.5"
+
+# State Serialization
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
+
+# Serial Communication
+serialport = "4.6"
+
+# Real-time primitives
+heapless = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = true
+panic = "abort"

@@ -1,0 +1,7 @@
+[build]
+# Set the default target to the Raspberry Pi Zero W (ARMv6)
+target = "arm-unknown-linux-gnueabihf"
+
+[target.arm-unknown-linux-gnueabihf]
+# Instructs cargo to use the cross-compiler linker
+linker = "arm-linux-gnueabihf-gcc"
