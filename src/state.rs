@@ -12,4 +12,5 @@ pub enum AudioCommand {
     UpdateSustain(f32),
     UpdateRelease(f32),
     UpdateWaveform(f32),
+    UpdateLFORate(f32),
 }

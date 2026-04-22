@@ -189,6 +189,7 @@ pub struct SynthHandles {
     pub sustain: Shared,
     pub release: Shared,
     pub waveform_select: Shared,
+    pub lfo_rate: Shared,
 }
 
 /// Build the 5-voice polyphonic synthesis graph.
@@ -196,6 +197,7 @@ pub fn build_synth_graph() -> (Box<dyn AudioUnit>, SynthHandles) {
     let fm_index = shared(2.0);
     let volume = shared(0.5);
     let waveform_select = shared(0.0);
+    let lfo_rate = shared(0.5); // 0.1Hz - 10Hz
     let attack = shared(0.03);
     let decay = shared(0.1);
     let sustain = shared(0.5);
@@ -203,12 +205,25 @@ pub fn build_synth_graph() -> (Box<dyn AudioUnit>, SynthHandles) {
 
     let mut voices_handles = Vec::with_capacity(5);
     
-    // Helper to create a single voice with its own handles.
-    macro_rules! create_voice_graph {
+    // Initialize 5 sets of per-voice handles.
+    let f0 = shared(440.0); let g0 = shared(0.0);
+    let f1 = shared(440.0); let g1 = shared(0.0);
+    let f2 = shared(440.0); let g2 = shared(0.0);
+    let f3 = shared(440.0); let g3 = shared(0.0);
+    let f4 = shared(440.0); let g4 = shared(0.0);
+
+    // Global LFO: modulates the FM Index for a growling effect
+    // We map the 0.0-1.0 knob to 0.1Hz - 20.0Hz
+    let lfo = (var(&lfo_rate) >> map(|r| 0.1 + r[0] * 19.9)) >> sine();
+    let lfo_mod = (lfo * 2.0) + var(&fm_index);
+
+    // Build the graph using the voices.
+    macro_rules! create_voice_graph_lfo {
         ($f:expr, $g:expr) => {{
             let s_freq = var(&$f) >> follow(0.01);
             let s_gate = var(&$g);
-            let s_fm_index = var(&fm_index) >> follow(0.01);
+            // Each voice now takes the global lfo_mod into account
+            let s_fm_index = lfo_mod.clone() >> follow(0.01);
             
             let env = s_gate.clone() >> An(SharedAdsr::new(
                 attack.clone(),
@@ -228,20 +243,12 @@ pub fn build_synth_graph() -> (Box<dyn AudioUnit>, SynthHandles) {
         }}
     }
 
-    // Initialize 5 sets of per-voice handles.
-    let f0 = shared(440.0); let g0 = shared(0.0);
-    let f1 = shared(440.0); let g1 = shared(0.0);
-    let f2 = shared(440.0); let g2 = shared(0.0);
-    let f3 = shared(440.0); let g3 = shared(0.0);
-    let f4 = shared(440.0); let g4 = shared(0.0);
-
-    // Build the graph using the voices.
     let graph = (
-        create_voice_graph!(f0, g0) +
-        create_voice_graph!(f1, g1) +
-        create_voice_graph!(f2, g2) +
-        create_voice_graph!(f3, g3) +
-        create_voice_graph!(f4, g4)
+        create_voice_graph_lfo!(f0, g0) +
+        create_voice_graph_lfo!(f1, g1) +
+        create_voice_graph_lfo!(f2, g2) +
+        create_voice_graph_lfo!(f3, g3) +
+        create_voice_graph_lfo!(f4, g4)
     ) >> mul(0.2) >> (pass() * (var(&volume) >> follow(0.1)));
 
     voices_handles.push(VoiceHandles { freq: f0, gate: g0 });
@@ -259,6 +266,7 @@ pub fn build_synth_graph() -> (Box<dyn AudioUnit>, SynthHandles) {
         sustain,
         release,
         waveform_select,
+        lfo_rate,
     };
 
     (Box::new(graph), handles)

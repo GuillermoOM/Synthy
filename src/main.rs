@@ -1,22 +1,20 @@
 mod audio;
 mod dsp;
 mod state;
+#[cfg(target_arch = "x86_64")]
+mod ui;
 
-use crossbeam_channel::unbounded;
+use crossbeam_channel::{unbounded, Sender};
 use std::time::Duration;
 use std::io::{BufRead, BufReader};
 use crate::state::AudioCommand;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("--- Synthy: Embedded Digital Synthesizer (Local Mode) ---");
-    println!("Hardware Target: Pi Zero W (ARMv6)");
-    println!("DSP Stack: CPAL + Fundsp");
-
+pub fn start_synth_backend() -> Result<(cpal::Stream, Sender<AudioCommand>), Box<dyn std::error::Error>> {
     // 1. Create communication channel between main and audio threads
     let (tx, rx) = unbounded();
 
     // 2. Setup audio stream
-    let _stream = audio::setup_audio_stream(rx)?;
+    let stream = audio::setup_audio_stream(rx)?;
     println!("Audio stream started successfully.");
 
     // 3. Setup Serial Interface for Microcontroller
@@ -38,8 +36,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 loop {
                     line.clear();
                     if reader.read_line(&mut line).is_ok() {
-                        println!("Received from serial: {}", line.trim());
                         let trimmed = line.trim();
+                        if trimmed.is_empty() { continue; }
+                        println!("Received from serial: {}", trimmed);
                         if trimmed.starts_with('P') {
                             // Potentiometer: P<id>:<normalized_val>
                             let parts: Vec<&str> = trimmed[1..].split(':').collect();
@@ -62,6 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         4 => { let _ = tx_serial.send(AudioCommand::UpdateDecay(val * 2.0)); }
                                         5 => { let _ = tx_serial.send(AudioCommand::UpdateSustain(val)); }
                                         6 => { let _ = tx_serial.send(AudioCommand::UpdateRelease(val * 2.0)); }
+                                        7 => { let _ = tx_serial.send(AudioCommand::UpdateLFORate(val)); }
                                         _ => {}
                                     }
                                 }
@@ -106,6 +106,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Failed to open serial port {}: {}. Serial control disabled.", port_name, e);
         }
     }
+
+    Ok((stream, tx))
+}
+
+#[cfg(target_arch = "x86_64")]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("--- Synthy: Embedded Digital Synthesizer (Local UI Mode) ---");
+    println!("Hardware Target: x86_64 Local");
+    
+    let (stream, tx) = start_synth_backend()?;
+    
+    let options = eframe::NativeOptions {
+        viewport: eframe::egui::ViewportBuilder::default().with_inner_size([800.0, 600.0]),
+        ..Default::default()
+    };
+    
+    eframe::run_native(
+        "Synthy Testing UI",
+        options,
+        Box::new(|_cc| Ok(Box::new(ui::SynthApp::new(tx, stream)))),
+    ).map_err(|e| e.into())
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("--- Synthy: Embedded Digital Synthesizer (Embedded Mode) ---");
+    println!("Hardware Target: Pi Zero W (ARMv6)");
+    println!("DSP Stack: CPAL + Fundsp");
+
+    let (_stream, _tx) = start_synth_backend()?;
 
     // 4. Main Loop (Keep synth active)
     println!("Synthesizer Active!");

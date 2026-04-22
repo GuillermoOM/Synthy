@@ -103,6 +103,22 @@ extern "C" void app_main() {
 
     ESP_LOGI(TAG, "HID Ready. Encoder on IO16/17.");
 
+    // --- Initial State Sync ---
+    // Read and send initial values for all pots to sync host
+    for (int i = 0; i < NUM_POTS; i++) {
+        int raw_val = 0;
+        if (POT_CONFIGS[i].unit == ADC_UNIT_1) {
+            adc_oneshot_read(adc1_handle, POT_CONFIGS[i].channel, &raw_val);
+        } else {
+            adc_oneshot_read(adc2_handle, POT_CONFIGS[i].channel, &raw_val);
+        }
+        float normalized = (float)raw_val / 4095.0f;
+        pot_ema_values[i] = normalized; // Seed the EMA filter
+        pot_last_sent[i] = normalized;
+        printf("P%d:%.3f\n", i, normalized);
+    }
+    printf("W:%d\n", waveform_index);
+
     // 4. Main Loop
     TickType_t last_wake_time = xTaskGetTickCount();
     while (1) {
