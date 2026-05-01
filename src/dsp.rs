@@ -61,6 +61,7 @@ impl AudioNode for SharedAdsr {
         // Gate transition logic
         if gate > 0.0 && self.last_gate <= 0.0 {
             self.stage = 1; // Attack
+            self.value = 0.0; // RESET: Start from zero amplitude for a clean re-trigger
             // Lock in parameters for the new note
             self.active_attack = self.attack.value().max(0.001);
             self.active_decay = self.decay.value().max(0.001);
@@ -154,7 +155,22 @@ impl AudioNode for SharedOscillator {
         self.last_gate = gate;
 
         let dt = 1.0 / self.sample_rate;
-        self.phase = (self.phase + freq * dt).fract();
+        let phase_inc = freq * dt;
+        self.phase = (self.phase + phase_inc).fract();
+
+        // PolyBLEP helper for anti-aliased edges (Saw and Square)
+        // t is phase [0, 1), dt is phase increment per sample
+        let blep = |t: f32, dt: f32| -> f32 {
+            if t < dt {
+                let t_over_dt = t / dt;
+                t_over_dt + t_over_dt - t_over_dt * t_over_dt - 1.0
+            } else if t > 1.0 - dt {
+                let t_minus_1_over_dt = (t - 1.0) / dt;
+                t_minus_1_over_dt + t_minus_1_over_dt + t_minus_1_over_dt * t_minus_1_over_dt + 1.0
+            } else {
+                0.0
+            }
+        };
 
         let v = match self.waveform.value() as i32 {
             0 => (self.phase * std::f32::consts::TAU).sin(), // Sine
@@ -164,8 +180,15 @@ impl AudioNode for SharedOscillator {
                 else if x < 3.0 { 2.0 - x }
                 else { x - 4.0 }
             }
-            2 => self.phase * 2.0 - 1.0, // Saw
-            3 => if self.phase < 0.5 { 1.0 } else { -1.0 }, // Square
+            2 => { // PolyBLEP Saw
+                let naive_saw = self.phase * 2.0 - 1.0;
+                naive_saw - blep(self.phase, phase_inc)
+            }
+            3 => { // PolyBLEP Square
+                let naive_square = if self.phase < 0.5 { 1.0 } else { -1.0 };
+                let p2 = (self.phase + 0.5).fract();
+                naive_square + blep(self.phase, phase_inc) - blep(p2, phase_inc)
+            },
             _ => (self.phase * std::f32::consts::TAU).sin(),
         };
 
@@ -190,18 +213,24 @@ pub struct SynthHandles {
     pub release: Shared,
     pub waveform_select: Shared,
     pub lfo_rate: Shared,
+    pub lfo_amp: Shared,
+    pub filter_cutoff: Shared,
+    pub filter_res: Shared,
 }
 
 /// Build the 5-voice polyphonic synthesis graph.
 pub fn build_synth_graph() -> (Box<dyn AudioUnit>, SynthHandles) {
-    let fm_index = shared(2.0);
-    let volume = shared(0.5);
+    let fm_index = shared(0.0);
+    let volume = shared(1.0);
     let waveform_select = shared(0.0);
-    let lfo_rate = shared(0.5); // 0.1Hz - 10Hz
-    let attack = shared(0.03);
+    let lfo_rate = shared(1.0); // 0.1Hz - 10Hz
+    let lfo_amp = shared(0.0);
+    let attack = shared(0.1);
     let decay = shared(0.1);
-    let sustain = shared(0.5);
-    let release = shared(0.1);
+    let sustain = shared(0.8);
+    let release = shared(0.2);
+    let filter_cutoff = shared(20000.0);
+    let filter_res = shared(0.707);
 
     let mut voices_handles = Vec::with_capacity(5);
     
@@ -215,12 +244,12 @@ pub fn build_synth_graph() -> (Box<dyn AudioUnit>, SynthHandles) {
     // Global LFO: modulates the FM Index for a growling effect
     // We map the 0.0-1.0 knob to 0.1Hz - 20.0Hz
     let lfo = (var(&lfo_rate) >> map(|r| 0.1 + r[0] * 19.9)) >> sine();
-    let lfo_mod = (lfo * 2.0) + var(&fm_index);
+    let lfo_mod = (lfo * var(&lfo_amp)) + var(&fm_index);
 
     // Build the graph using the voices.
     macro_rules! create_voice_graph_lfo {
         ($f:expr, $g:expr) => {{
-            let s_freq = var(&$f) >> follow(0.01);
+            let s_freq = var(&$f);
             let s_gate = var(&$g);
             // Each voice now takes the global lfo_mod into account
             let s_fm_index = lfo_mod.clone() >> follow(0.01);
@@ -233,11 +262,13 @@ pub fn build_synth_graph() -> (Box<dyn AudioUnit>, SynthHandles) {
             ));
 
             // Modulator: always a sine for classic FM
-            let modulator = (s_freq.clone() * s_fm_index) >> sine();
+            // We use s_fm_index for both Ratio and Depth to ensure that if Ratio is 0, Depth is also 0.
+            // This prevents "frozen" frequency offsets when the modulator frequency hits 0.
+            let modulator = (s_freq.clone() * s_fm_index.clone()) >> sine();
             
             // Carrier: Using our efficient multi-waveform oscillator
             // It now takes frequency and gate as inputs [freq, gate]
-            let carrier = ((s_freq + modulator * 200.0) | s_gate) >> An(SharedOscillator::new(waveform_select.clone()));
+            let carrier = ((s_freq + modulator * (s_fm_index * 50.0)) | s_gate) >> An(SharedOscillator::new(waveform_select.clone()));
             
             carrier * env
         }}
@@ -249,7 +280,11 @@ pub fn build_synth_graph() -> (Box<dyn AudioUnit>, SynthHandles) {
         create_voice_graph_lfo!(f2, g2) +
         create_voice_graph_lfo!(f3, g3) +
         create_voice_graph_lfo!(f4, g4)
-    ) >> mul(0.2) >> (pass() * (var(&volume) >> follow(0.1)));
+    ) >> mul(0.2);
+
+    let filter = (pass() | var(&filter_cutoff) >> follow(0.01) | var(&filter_res) >> follow(0.01)) >> lowpass();
+
+    let final_graph = (graph >> filter) * (var(&volume) >> follow(0.1));
 
     voices_handles.push(VoiceHandles { freq: f0, gate: g0 });
     voices_handles.push(VoiceHandles { freq: f1, gate: g1 });
@@ -267,7 +302,10 @@ pub fn build_synth_graph() -> (Box<dyn AudioUnit>, SynthHandles) {
         release,
         waveform_select,
         lfo_rate,
+        lfo_amp,
+        filter_cutoff,
+        filter_res,
     };
 
-    (Box::new(graph), handles)
+    (Box::new(final_graph), handles)
 }

@@ -51,6 +51,11 @@ pub fn setup_audio_stream(
                     AudioCommand::UpdateRelease(r) => handles.release.set_value(r),
                     AudioCommand::UpdateWaveform(w) => handles.waveform_select.set_value(w),
                     AudioCommand::UpdateLFORate(r) => handles.lfo_rate.set_value(r),
+                    AudioCommand::UpdateLFOAmp(a) => handles.lfo_amp.set_value(a),
+                    AudioCommand::UpdateFilter(c, r) => {
+                        handles.filter_cutoff.set_value(c);
+                        handles.filter_res.set_value(r);
+                    }
                 }
             }
 

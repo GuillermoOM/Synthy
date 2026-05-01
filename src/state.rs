@@ -13,4 +13,6 @@ pub enum AudioCommand {
     UpdateRelease(f32),
     UpdateWaveform(f32),
     UpdateLFORate(f32),
+    UpdateLFOAmp(f32),
+    UpdateFilter(f32, f32), // cutoff, resonance
 }
